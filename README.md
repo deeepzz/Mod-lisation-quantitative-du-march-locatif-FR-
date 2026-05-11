@@ -1,4 +1,4 @@
-# Modélisation quantitative du marché locatif français 2025
+# Modelisation quantitative du marche locatif français 2025
 
 
 - Nettoyage et analyse de 4 jeux de données immobiliers provenant de data.gouv.fr
