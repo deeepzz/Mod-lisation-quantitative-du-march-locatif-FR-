@@ -1,0 +1,1077 @@
+---
+title: "Analyse des loyers du marché locatif privé français en 2025"
+author: "Sofonia TONON, Ngoc Anh NGUYEN & Pradeepa ARUMUGAM"
+date: "2026-03-04"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+---
+
+
+#Introduction : Origine des données
+
+Le jeu de données utilisé provient du projet « Carte des loyers » développé par le Ministère chargé du logement et l'Agence nationale pour l'information sur le logement (ANIL). Ce projet a été lancé en 2018 afin de combler un manque identifié par le Ministère, car aucun indicateur de loyers ne couvrait l'ensemble du territoire national avec une méthodologie homogène et transparente.
+
+Les indicateurs sont calculés à partir d'annonces de location publiées sur les plateformes Leboncoin et SeLoger entre 2019 et 2025. Il ne s'agit donc pas de loyers médians ou moyens observés, mais de prédictions issues d'un modèle économétrique estimant le loyer charges comprises d'un logement non meublé de référence mis en location au troisième trimestre 2025.
+
+Les logements de référence sont définis par les caractéristiques suivantes :
+
+- Appartement (toutes typologies) : 52 m², surface moyenne par pièce de 22,2 m²  
+- Appartement T1–T2 : 37 m², surface moyenne par pièce de 22,9 m²  
+- Appartement T3 et plus : 72 m², surface moyenne par pièce de 21,3 m²  
+- Maison : 92 m², surface moyenne par pièce de 22,4 m²
+
+# Structure du jeu de données
+
+Nous disposons de quatre fichiers CSV, chacun correspondant à un type de logement parmi les appartements toutes typologies, les appartements T1-T2, les appartements T3 et plus, et les maisons. Chaque fichier contient 34 900 lignes correspondant aux communes françaises hors Mayotte selon la géographie en vigueur au 1er janvier 2025, et 13 variables identiques. Les analyses principales porteront sur les fichiers appartements et maisons, que nous fusionnerons pour les analyses multivariées afin de comparer les deux marchés au sein des mêmes communes.
+
+# Description des variables
+
+Les 13 variables se répartissent en trois catégories. Les variables d'identification géographique (`id_zone`, `INSEE_C`, `LIBGEO`, `EPCI`) ne sont pas utilisées dans les analyses. Les variables analytiques sont décrites ci-dessous.
+
+```{r installation-packages+description-variables, echo=FALSE}
+
+#Installation des packages nécessaire pour la conduite des différents analyses.
+
+if (!require("pacman")) install.packages("pacman", repos = "https://cloud.r-project.org")
+pacman::p_load(
+  tidyverse,   # manipulation et visualisation de données (dplyr, ggplot2, etc.)
+  knitr,       # production de tableaux formatés avec kable()
+  kableExtra,  # options de mise en forme avancées pour kable()
+  scales,      # formatage des axes et labels dans ggplot2
+  FactoMineR,  # Analyse en Composantes Principales (ACP)
+  factoextra,  # visualisation des résultats de l'ACP et du clustering
+  corrplot,    # matrice de corrélation graphique
+  cluster,     # algorithmes de clustering (silhouette, etc.)
+  ggrepel,      # labels non superposés dans ggplot2
+  broom,       # tidy(), augment() pour prcomp
+  ggfortify,   # autoplot() pour prcomp
+  corrr,      # correlate() et rplot()
+  RColorBrewer 
+)
+
+# Création du tableau de description des variables en utilisant un dataframe qui contient trois vecteurs regroupant les différentes variables étudiées, leurs natures et ce qu'elles représentent.
+
+tab_variables <- data.frame(
+  Variable = c("DEP", "REG", "TYPPRED",
+               "loypredm2", "lwr.IPm2", "upr.IPm2",
+               "R2_adj", "nbobs_com", "nbobs_mail", "IP_largeur"),
+  Nature = c("Qualitative ", "Qualitative", "Qualitative",
+             "Quantitative continue", "Quantitative continue", "Quantitative continue",
+             "Quantitative continue", "Quantitative discrète", "Quantitative discrète","Quantitative continue"),
+  Description = c(
+    "Code du département (100 modalités)",
+    "Code de la région (17 modalités)",
+    "Niveau de prédiction : commune, EPCI ou maille",
+    "Loyer estimé en €/m², charges comprises (variable cible principale)",
+    "Borne inférieure de l'intervalle de prédiction à 95% (€/m²)",
+    "Borne supérieure de l'intervalle de prédiction à 95% (€/m²)",
+    "Qualité du modèle hédonique (0 à 1, satisfaisant au-dessus de 0,5)",
+    "Nombre d'annonces dans la commune (fiabilité faible si < 30)",
+    "Nombre d'annonces dans la maille de prédiction",
+    "Largeur de l'intervalle de prédiction : upr.IPm2 - lwr.IPm2"
+  )
+)
+knitr::kable(tab_variables,
+             col.names = c("Variable", "Nature", "Description"),
+             caption = "Description des variables analytiques utilisées dans l'étude") 
+```
+
+# Valeurs manquantes et nettoyage
+
+Une vérification préliminaire montre qu'aucune valeur manquante n'est présente dans les fichiers. Cependant, les variables numériques `loypredm2`, `R2_adj`,`lwr.IPm2` et `upr.IPm2` sont lues comme des chaînes de caractères en raison de l'utilisation de la virgule comme séparateur décimal dans les fichiers source. Une conversion explicite en type numérique sera donc effectuée avant toute analyse.
+
+# Problématique et objectifs
+
+Ce jeu de données nous amène à nous poser la question suivante : les loyers du marché locatif privé français en 2025 sont-ils structurés par des logiques territoriales identifiables, et dans quelle mesure la fiabilité des estimations conditionne-t-elle les conclusions qu'on peut en tirer ?
+
+
+```{r chargement-data, echo=TRUE}
+
+
+data_appart <- read.csv2("pred-app-mef-dhup.csv")
+
+data_appart3 <- read.csv2("pred-app3-mef-dhup.csv")
+
+data_appart1_2 <- read.csv2("pred-app12-mef-dhup.csv")
+
+data_maison <- read.csv2("pred-mai-mef-dhup.csv")
+```
+
+```{r csv-to-tibble, echo= TRUE}
+#Conversion en tibble pour faciliter la manipulation 
+
+data_maison <- as_tibble(data_maison)       # maisons
+data_appart <- as_tibble(data_appart)       # appartements toutes typologies
+data_appart1_2 <- as_tibble(data_appart1_2) # T1–T2
+data_appart3 <- as_tibble(data_appart3)     # T3 et plus
+
+```
+
+```{r Nettoyage, echo= TRUE}
+
+# Les colonnes numériques sont lues comme texte car le fichier source utilise 
+# la virgule comme séparateur décimal (format français). 
+# Donc on remplace la virgule par un point puis on convertit en numérique.
+
+# Fonction de nettoyage "nettoyer" réutilisable pour transformer les "," en ".",
+
+nettoyer <- function(df) {
+  # Remplacer les virgules par des points dans la colonne loypredm2,
+  # puis convertir en numérique
+  df$loypredm2 <- gsub(",", ".", df$loypredm2)  # remplacer , par .
+  df$loypredm2 <- as.numeric(df$loypredm2)      # convertir en nombre
+  
+  df$lwr.IPm2 <- gsub(",", ".", df$lwr.IPm2)   
+  df$lwr.IPm2 <- as.numeric(df$lwr.IPm2)        
+  
+  df$upr.IPm2 <- gsub(",", ".", df$upr.IPm2)    
+  df$upr.IPm2 <- as.numeric(df$upr.IPm2)        
+  
+  df$R2_adj <- gsub(",", ".", df$R2_adj)     
+  df$R2_adj <- as.numeric(df$R2_adj)        
+
+  return(df)
+}
+# Nettoyage des quatre jeux de données
+data_appart    <- nettoyer(data_appart)     # appartements toutes typologies
+data_maison    <- nettoyer(data_maison)     # maisons
+data_appart1_2 <- nettoyer(data_appart1_2)  # T1–T2
+data_appart3   <- nettoyer(data_appart3)    # T3 et plus
+
+```
+
+```{r vérification is.na, echo= TRUE }
+#Vérification des valeurs manquantes pour chaque tibble
+
+colSums(is.na(data_appart))
+colSums(is.na(data_maison))
+colSums(is.na(data_appart1_2))
+colSums(is.na(data_appart3))
+
+```
+
+```{r glimpse-data_maison, echo= TRUE }
+#Aperçu de la structure des 4 datasets
+
+glimpse(data_maison)
+glimpse(data_appart)
+glimpse(data_appart1_2)
+glimpse(data_appart3)
+
+```
+
+
+Nous caractériserons la distribution des loyers au m² à l'échelle nationale à travers un tableau d'indicateurs synthétiques (moyenne, médiane, écart-type, quartiles etc) pour la variable principale'loypredm2'de chaque dataset puis on utilise le summary pour afficher les statistiques descriptives basiques de chacune des variables continue restants
+
+```{r stats-indicateurs-descrip-loypredm2-appart, echo= TRUE }
+
+# Extraction de la variable loypredm2 (loyer prédit au m²) du dataset appartements
+loy <- data_appart$loypredm2
+
+# Création d'un tableau de statistiques descriptives sous forme de data.frame
+# avec deux colonnes : le nom de l'indicateur et sa valeur calculée
+tab_stats_appart_loypredm2 <- data.frame(
+  
+  # Colonne des noms des indicateurs statistiques (vecteur de chaînes de caractères)
+  Indicateur = c("Minimum", "1er quartile (Q1)", "Médiane", "Moyenne",
+                 "3e quartile (Q3)", "Maximum", "Écart interquartile (IQR)",
+                 "Écart-type", "Coefficient de variation (%)"),
+  
+  # Colonne des valeurs calculées, arrondies pour la lisibilité
+  Valeur = c(
+    round(min(loy), 2), # Valeur minimale du loyer au m², arrondie à 2 décimales
+    
+    # 1er quartile: 25% des communes ont un loyer inférieur à cette valeur
+    round(quantile(loy, 0.25), 2),
+    
+    round(median(loy), 2),# Médiane : valeur centrale, robuste aux valeurs extrêmes
+    
+    round(mean(loy), 2),# Moyenne arithmétique, sensible aux valeurs extrêmes
+    
+    # 3e quartile : 75% des communes ont un loyer inférieur à cette valeur
+    round(quantile(loy, 0.75), 2),
+    
+    round(max(loy), 2), # Valeur maximale du loyer au m², arrondie à 2 décimales
+    
+    round(IQR(loy), 2), # Écart interquartile = Q3 - Q1, mesure la dispersion centrale
+    
+    round(sd(loy), 2),  # Écart-type : mesure la dispersion autour de la moyenne
+    # Coefficient de variation = (écart-type / moyenne) × 100, exprimé en %
+    round(sd(loy) / mean(loy) * 100, 1) 
+    # permet de comparer la dispersion relative entre distributions de niveaux différents
+  )
+)
+
+# Affichage du tableau formaté avec kable() pour la variable continue loypredm2
+tab_stats_appart_loypredm2 %>%
+  knitr::kable(caption = "le loyer estimé en €/m² charges comprises des appartements toutes typologies")
+
+```
+Le loyer médian des appartements est d’environ 10 €/m². La moyenne étant légèrement supérieure à la médiane, la distribution est asymétrique à droite : quelques communes très chères tirent les loyers vers le haut. La dispersion reste importante, ce qui reflète les fortes différences territoriales du marché locatif français.
+
+
+```{r stats-indicateurs-descrip-loypredm2-appart1_2, echo = TRUE}
+
+# Extraction de la variable loypredm2 (loyer prédit au m²) du dataset appartements T1-T2
+# dans un vecteur 'loy' pour simplifier les appels suivants
+loy <- data_appart1_2$loypredm2
+
+# Création d'un tableau de statistiques descriptives sous forme de data.frame
+# avec deux colonnes : le nom de l'indicateur et sa valeur calculée
+tab_stats_appart1_2_loypredm2 <- data.frame(
+  
+  # Colonne des noms des indicateurs statistiques (vecteur de chaînes de caractères)
+  Indicateur = c("Minimum", "1er quartile (Q1)", "Médiane", "Moyenne",
+                 "3e quartile (Q3)", "Maximum", "Écart interquartile (IQR)",
+                 "Écart-type", "Coefficient de variation (%)"),
+  
+  # Colonne des valeurs calculées, arrondies pour la lisibilité
+  Valeur = c(
+    round(min(loy), 2),
+    round(quantile(loy, 0.25), 2),
+    round(median(loy), 2),
+    round(mean(loy), 2),
+    round(quantile(loy, 0.75), 2),
+    round(max(loy), 2),
+    round(IQR(loy), 2),
+    round(sd(loy), 2),
+    
+    # Coefficient de variation = (écart-type / moyenne) × 100, exprimé en %
+    round(sd(loy) / mean(loy) * 100, 1) 
+    # particulièrement élevé pour les T1-T2 en raison des fortes disparités 
+    #entre villes et zones rurales
+  )
+)
+tab_stats_appart1_2_loypredm2 %>%
+  knitr::kable(caption = "le loyer estimé en €/m² (charges comprises) des appartement de type T1-T2")
+```
+Les T1-T2 ont les loyers au m² les plus élevés, ce qui est cohérent avec l’effet de superficie : les petites surfaces sont proportionnellement plus chères. La dispersion importante montre aussi de fortes différences entre communes.
+
+
+
+```{r stats-indicateurs-descrip-loypredm2-appart3, echo= TRUE }
+
+# Calcul manuel des indicateurs statistiques principaux pour loypredm2 du dataset appart3
+loy <- data_appart3$loypredm2
+
+tab_stats_appart3_loypredm2 <- data.frame(
+  Indicateur = c("Minimum", "1er quartile (Q1)", "Médiane", "Moyenne",
+                 "3e quartile (Q3)", "Maximum", "Écart interquartile (IQR)",
+                 "Écart-type", "Coefficient de variation (%)"),
+  Valeur = c(
+    round(min(loy), 2), 
+    round(quantile(loy, 0.25), 2),
+    round(median(loy), 2),
+    round(mean(loy), 2),
+    round(quantile(loy, 0.75), 2),
+    round(max(loy), 2),
+    round(IQR(loy), 2),
+    round(sd(loy), 2),
+    round(sd(loy) / mean(loy) * 100, 1)
+  )
+)
+tab_stats_appart3_loypredm2 %>%
+  knitr::kable(caption = "le loyer estimé en €/m² (charges comprises) des appartement de type T3")
+
+```
+Les T3 présentent des loyers au m² plus faibles que les T1–T2. La distribution est également un peu plus homogène, avec une dispersion moins marquée entre communes.
+
+```{r stats-indicateurs-descrip-loypredm2-maison, echo= TRUE }
+
+# Calcul manuel des indicateurs statistiques principaux pour loypredm2 du dataset maison
+loy <-data_maison$loypredm2
+
+tab_stats_maison_loypredm2 <- data.frame(
+  Indicateur = c("Minimum", "1er quartile (Q1)", "Médiane", "Moyenne",
+                 "3e quartile (Q3)", "Maximum", "Écart interquartile (IQR)",
+                 "Écart-type", "Coefficient de variation (%)"),
+  Valeur = c(
+    round(min(loy), 2), #calcul arrondie à 2 chiffres après le virg du minimun
+    round(quantile(loy, 0.25), 2), #cal
+    round(median(loy), 2),
+    round(mean(loy), 2),
+    round(quantile(loy, 0.75), 2),
+    round(max(loy), 2),
+    round(IQR(loy), 2),
+    round(sd(loy), 2),
+    round(sd(loy) / mean(loy) * 100, 1)
+  )
+)
+tab_stats_maison_loypredm2 %>%
+  knitr::kable(caption = "le loyer estimé en €/m² (charges comprises) des maisons")
+
+```
+Les maisons ont les loyers au m² les plus faibles, notamment en raison de leur superficie plus grande et de leur présence plus fréquente dans les zones peu denses. Les écarts entre communes restent toutefois importants.
+
+```{r summary-data_appart, echo= TRUE }
+
+data_appart %>%
+  select(R2_adj, nbobs_com, nbobs_mail) %>%
+  summary() %>%
+  knitr::kable(caption = "Statistiques descriptives des appartements toutes typologies")
+```
+
+Le R² ajusté médian des appartements toutes typologies est satisfaisant (supérieur à 0,5), indiquant que le modèle hédonique explique correctement la variance des loyers pour la majorité des communes. La variable nbobs_com est très asymétrique : sa médiane est faible, reflétant que la plupart des communes françaises concentrent peu d'annonces, tandis que nbobs_mail est systématiquement plus élevé car il agrège les annonces de la maille géographique environnante.
+
+
+
+```{r summary-data_appart1_2, echo= TRUE }
+
+data_appart1_2 %>%
+  select(R2_adj, nbobs_com, nbobs_mail) %>%
+  summary() %>%
+  knitr::kable(caption = "Statistiques descriptives des appartements T1-T2 (réf. 37 m²)")
+```
+
+Pour les T1-T2, le R² ajusté médian est légèrement plus élevé que pour les autres typologies, ce qui s'explique par la concentration de ce type de bien dans les grandes agglomérations où les annonces sont abondantes et homogènes. En revanche, nbobs_com reste très faible pour la majorité des communes, confirmant que les petites surfaces sont quasi absentes du marché locatif dans les zones rurales.
+
+
+
+```{r summary-glimpse-data_appart3, echo= TRUE }
+
+data_appart3 %>%
+  select(loypredm2, R2_adj, nbobs_com, nbobs_mail) %>%
+  summary() %>%
+  knitr::kable(caption = "Statistiques descriptives des appartements T3 et plus (réf. 72 m²)")
+```
+Les T3 et plus présentent un R² ajusté médian plus faible que les T1-T2, ce qui traduit une plus grande hétérogénéité du parc de grands appartements entre communes. Le nombre d'annonces par commune est globalement faible, les grands appartements étant moins fréquemment mis en location que les petites surfaces sur les plateformes en ligne.
+
+
+
+```{r summary-data_maison, echo= TRUE }
+
+data_maison %>%
+  select(loypredm2, R2_adj, nbobs_com, nbobs_mail) %>%
+  summary() %>%
+  knitr::kable(caption = "Statistiques descriptives des maisons (réf. 92 m²)")
+```
+
+#Analyse univariée d'une variable quantitative : loypredm2
+
+```{r geom_histogram-loypredm2 , echo= TRUE }
+
+# on va coller les 4 data frames les uns au‑dessus des autres 
+# puis on va ajouter sur chaque dataset une nouvelle colonne de "type" 
+# qui va contenir les différnets types (“Appartements”, “T1‑T2”, etc.) 
+# donc on obtient un grand tableau où chanque ligne correspond à 
+# “une commune × un type de logement”, avec son loyer/m^2
+
+tout_loyers <- bind_rows(
+  data_appart    %>% mutate(type = "Appartements (toutes typo)"),# toutes typo
+  data_appart1_2%>% mutate(type = "T1-T2"),                       # petits appart
+  data_appart3   %>% mutate(type = "T3 et plus"),                 # grands appart
+  data_maison    %>% mutate(type = "Maisons")                     # maisons
+)
+ggplot(tout_loyers, aes(x = loypredm2, fill = type)) +
+  
+  #largeur de chaque plage de prix (0,5 €/m²)
+  geom_histogram(binwidth = 0.5, color = "black") + 
+  
+  facet_wrap(~ type, scales = "free_y", ncol = 2) +
+  scale_fill_brewer(palette = "Set2") +
+  scale_x_continuous(
+    breaks = seq(0, 25, by = 2) # graduations tous les 2 €/m²
+  ) +
+  labs(
+    title    = "Distribution des loyers au m² selon le type de logement",
+    subtitle = "Chaque barre représente un intervalle de loyers, hauteur = nombre de communes",
+    x        = "Loyer prédit au m² (€)",
+    y        = "Nombre de communes",
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "none",
+        strip.text = element_text(face = "bold"))
+```
+Les distributions présentent une concentration des loyers autour des valeurs modérées, avec quelques communes très chères.
+
+```{r Boxplot-loypredm2, echo= TRUE }
+
+bind_rows(
+  data_appart    %>% mutate(type = "Appart. (toutes)"),
+  data_appart1_2 %>% mutate(type = "T1-T2"),
+  data_appart3   %>% mutate(type = "T3 et plus"),
+  data_maison    %>% mutate(type = "Maisons")
+) %>%
+# Réordonner par médiane décroissante pour la lecture
+mutate(type = reorder(type, loypredm2, median, decreasing = TRUE)) %>%
+ggplot(aes(x = type, y = loypredm2, fill = type)) +
+  geom_boxplot(
+    outlier.size  = 0.6,   # taille réduite des points aberrants pour ne pas surcharger
+    outlier.alpha = 0.4,   # transparence des outliers pour alléger visuellement
+    color = "black",       # contour noir des boîtes pour la lisibilité
+    alpha = 0.8            # légère transparence du remplissage des boîtes
+  ) +
+
+  scale_fill_brewer(palette = "Set2") +  # palette qualitative adaptée à 4 groupes distincts
+
+  labs(
+    title    = "Comparaison des loyers au m² par type de logement",
+    subtitle = "Boîte = Q1-Q3, trait central = médiane, points = valeurs extrêmes",
+    x        = NULL,                      # pas de titre sur l'axe X, les labels suffisent
+    y        = "Loyer prédit au m² (€)",  # label axe Y
+    fill     = NULL                       # pas de titre pour la légende
+  ) +
+
+  theme_minimal(base_size = 11) +        # thème épuré, taille de police 11 pts
+  theme(legend.position = "none")        # légende supprimée car les labels sur l'axe X suffisent
+```
+
+Les boxplots confirment que les T1-T2 ont les loyers les plus élevés et les maisons les plus faibles. Les nombreuses valeurs extrêmes traduisent les fortes disparités territoriales du marché locatif.
+
+# Analyse univariée d'une variable qualitative : "TYPPRED"
+
+Nous étudions maintenant la variable qualitative TYPPRED (niveau de prédiction: commune, maille ou EPCI) afin d’observer la répartition des niveaux de prédiction.
+
+```{r tableau-quant_quant-typpred, echo= TRUE }
+
+# freq_typpred : calcule la répartition de TYPPRED pour un dataset donné
+
+freq_typpred <- function(df, label) {
+  df %>%
+    count(TYPPRED) %>%  # comptage les communes par modalité de TYPPRED
+    mutate(
+      Pourcentage = round(n / sum(n) * 100, 1), 
+      Dataset     = label # colonne identifiant le type de logement
+    ) %>%
+    rename(Modalité   = TYPPRED,               
+           Effectif   = n,
+           'Part (%)' = Pourcentage)
+}
+
+# Application aux 4 datasets et fusion en un tableau comparatif
+bind_rows(
+  freq_typpred(data_appart,    "Appartements"),
+  freq_typpred(data_appart1_2, "T1-T2"),
+  freq_typpred(data_appart3,   "T3 et plus"),
+  freq_typpred(data_maison,    "Maisons")
+) %>%
+  knitr::kable(caption = "Répartition du niveau de prédiction (TYPPRED) selon le type de logement")
+```
+Le tableau révèle que la modalité dominante est la maille pour les quatre types de logements, ce qui signifie que pour la majorité des communes françaises, les données locales sont insuffisantes pour une estimation communale directe. Les estimations à l'échelle communale, les plus précises, ne concernent qu'une minorité de communes, généralement les plus peuplées. Cela montre aussi une limite du jeu de données.
+
+
+
+```{r plot-quant_quant-TYPPRED, echo= TRUE }
+
+# Fusion des quatre jeux de données en un seul tableau
+# bind_rows() empile les datasets les uns sous les autres
+# mutate(type = ...) ajoute une variable indiquant
+# le type de logement correspondant à chaque ligne
+bind_rows(
+  data_appart    %>% mutate(type = "Appartements"),
+  data_appart1_2 %>% mutate(type = "T1-T2"),
+  data_appart3   %>% mutate(type = "T3 et plus"),
+  data_maison    %>% mutate(type = "Maisons")
+) %>%
+
+  # Comptage du nombre de communes
+  # pour chaque combinaison :
+  # type de logement × niveau de prédiction TYPPRED
+  count(type, TYPPRED) %>%
+
+  # Regroupement par type de logement
+  # afin de calculer les pourcentages séparément
+  group_by(type) %>%
+
+  # Calcul de la proportion de chaque modalité TYPPRED
+  # à l’intérieur de chaque type de logement
+  mutate(pct = n / sum(n) * 100) %>%
+
+  # Création du graphique avec ggplot :
+  # - axe X : modalité de TYPPRED
+  # - axe Y : pourcentage de communes
+  # - fill : couleur selon TYPPRED
+  ggplot(aes(x = TYPPRED, y = pct, fill = TYPPRED)) +
+
+  # Création des barres verticales :
+  # geom_col() utilise directement les valeurs de pct
+  # alpha contrôle la transparence des barres
+  geom_col(alpha = 0.85) +
+
+  # Séparation du graphique en plusieurs panneaux
+  # un panneau par type de logement
+  # ncol = 2 organise les graphiques sur 2 colonnes
+  facet_wrap(~ type, ncol = 2) +
+
+  # Palette de couleurs qualitative adaptée
+  # aux variables catégorielles
+  scale_fill_brewer(palette = "Set2") +
+
+  # Ajout des titres et labels des axes
+  labs(
+    title = "Niveau de prédiction (TYPPRED) par type de logement",
+    x     = "Niveau de prédiction",
+    y     = "Part des communes (%)",
+    fill  = NULL
+  ) +
+
+  # Application d’un thème minimaliste
+  # avec une taille de police de base de 11
+  theme_minimal(base_size = 11) +
+
+  # Personnalisation du thème :
+  # - suppression de la légende
+  # - mise en gras du titre des facettes
+  theme(
+    legend.position = "none",
+    strip.text      = element_text(face = "bold")
+  )
+```
+Pour les quatre types de logements, la modalité maille est dominante et représente la grande majorité des communes, confirmant les résultats du tableau de fréquences. Les maisons présentent la part la plus faible d'estimations communales directes, signe que ce marché est le moins bien couvert par les annonces en ligne. Les appartements T1-T2 concentrent quant à eux la plus grande proportion d'estimations communales,cohérent avec leur surreprésentation dans les grandes villes.
+
+
+# Analyse bivariée (variable quantitative-qualitative) : loypredm2-typpred
+
+Ce boxplot croise le loyer au m² avec le niveau de prédiction `TYPPRED` afin d'évaluer si la fiabilité de l'estimation est associée au niveau des loyers observés.
+
+```{r analyse-bivariée-boxplot-loypredm2-typpred, echo=TRUE}
+
+appart_typpred <- data_appart %>%
+  select(loypredm2, TYPPRED)
+
+appart_typpred$TYPPRED <- as.factor(appart_typpred$TYPPRED)
+
+ggplot(appart_typpred, aes(x = TYPPRED, y = loypredm2, fill = TYPPRED)) +
+  geom_boxplot(alpha = 0.8, outlier.alpha = 0.4) +
+  geom_jitter(width = 0.2, alpha = 0.1, size = 0.3) +
+  scale_fill_brewer(palette = "Set3") +             
+  labs(
+    title = "Loyers au m² selon le niveau de prédiction (appartements)",
+    x     = "Niveau de prédiction (TYPPRED)",
+    y     = "Loyer prédit au m² (€)",
+    fill  = "TYPPRED"
+  ) +
+  theme_minimal(base_size = 11)
+```
+
+Les communes estimées directement à l'échelle communale affichent des loyers au m² plus élevés que celles estimées par maille ou EPCI : ce sont majoritairement des communes urbaines et densément peuplées, où les annonces sont nombreuses et les loyers élevés. À l'inverse, les communes estimées par maille sont surtout rurales, avec peu d'annonces disponibles. Le type de prédiction utilisé dépend donc fortement du niveau d’urbanisation des communes.
+
+# Analyse bivariée (variable qualitative-qualitative) : typpred-reg
+
+
+```{r barres-empilees-typpred-reg, echo=TRUE}
+
+data_plot <- data_appart
+
+plot_typpred_reg <- data_plot %>%
+  count(REG, TYPPRED) %>%
+  group_by(REG) %>%
+  mutate(pct = n / sum(n) * 100)
+
+ggplot(plot_typpred_reg, aes(x = REG, y = pct, fill = TYPPRED)) +
+  geom_col() +
+  scale_fill_brewer(palette = "Pastel1") +     
+  labs(
+    title = "Répartition de TYPPRED par région (appartements)",
+    x     = "Région (code REG)",
+    y     = "Part des communes dans la région (%)",
+    fill  = "Niveau de prédiction"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+La répartition de TYPPRED varie sensiblement selon les régions : certaines régions, notamment les plus urbanisées, présentent une part plus importante d'estimations communales directes, tandis que les régions rurales sont dominées par les estimations par maille. Ce résultat sera confirmé statistiquement par le test du Khi-deux ci-dessous.
+
+
+Le tableau de contingence ci-dessous croise le niveau de prédiction `TYPPRED` 
+avec la région `REG` afin de quantifier les disparités régionales dans la 
+couverture du dispositif déjà observées dans le graphique précédent.
+
+```{r tableau-typpred-reg, echo=TRUE}
+
+# Tableau de contingence TYPPRED × REG pour les appartements
+tab_typpred_reg <- table(data_appart$TYPPRED, data_appart$REG)
+
+# Affichage du tableau brut (effectifs)
+tab_typpred_reg
+
+# Pourcentages par région (colonnes = 100%)
+tab_typpred_reg_pct <- prop.table(tab_typpred_reg, margin = 2) * 100
+tab_typpred_reg_pct <- round(tab_typpred_reg_pct, 1)
+
+tab_typpred_reg_pct
+
+```
+
+Le tableau confirme que la part d'estimations communales directes (`commune`) est nettement plus élevée dans les régions densément peuplées, comme l'Île-de-France ou Auvergne-Rhône-Alpes, que dans les régions à dominante rurale où la modalité `maille` est quasi exclusive. Ces différences de couverture sont visuellement marquées et seront testées statistiquement par le test du Khi-deux dans le chunk suivant.
+
+
+Le test du Khi-deux ci-dessous permet de tester statistiquement si la répartition de `TYPPRED` est indépendante de la région, ou si les différences observées dans le tableau sont significatives.
+
+```{r chisq-typpred-reg, echo=TRUE}
+
+# Test du Khi-deux d'indépendance entre TYPPRED et REG
+# H0 : TYPPRED et REG sont indépendants
+# H1 : il existe une dépendance entre TYPPRED et REG
+chisq_res <- chisq.test(tab_typpred_reg)
+
+# Affichage des résultats
+chisq_res
+```
+
+Le test du Khi-deux conclut à une dépendance hautement significative entre le niveau de prédiction `TYPPRED` et la région `REG` (p-value < 2.2e-16, très largement inférieure au seuil de 5 %). On rejette donc l'hypothèse nulle d'indépendance : la répartition des niveaux de prédiction n'est pas uniforme entre régions. Ce résultat confirme que les inégalités de 
+couverture du dispositif sont structurées territorialement, les régions les plus urbanisées bénéficiant d'estimations communales directes plus fréquentes, tandis que les régions rurales restent majoritairement dépendantes d'agrégations géographiques par maille.
+
+# Corrélations entre variables quantitatives
+
+```{r création-variable-largeur_IP, echo= TRUE}
+
+# Création de la largeur de l'intervalle de prédiction 
+# en utilisant mutate pour ajouter la nouvelle varibale 
+loyers_appart <- data_appart %>%
+  mutate(
+    largeur_IP = upr.IPm2 - lwr.IPm2
+  )
+```
+
+```{r visualisation-corrélation, echo=TRUE}
+
+# Sélection des variables quantitatives
+vars_cor <- loyers_appart %>%
+  select(loypredm2, largeur_IP, R2_adj, nbobs_com, nbobs_mail) %>%
+  drop_na()
+
+mat_cor <- cor(vars_cor)# Matrice de corrélation de Pearson
+
+knitr::kable(
+  round(mat_cor, 3),
+  caption = "Matrice de corrélation de Pearson"
+)
+
+# Visualisation
+corrplot(
+  mat_cor,
+  method = "color",
+  type = "upper",
+  addCoef.col = "black",
+  tl.col = "black",
+  tl.srt = 45
+)
+```
+La corrélation la plus forte est observée entre loypredm2 et largeur_IP, ce qui indique que les marchés aux loyers élevés présentent également une plus forte incertitude de prédiction. Les variables nbobs_com et nbobs_mail sont également positivement corrélées, ce qui reflète la concentration des annonces dans les mêmes territoires.
+
+# Analyse de regression linéaire simple
+
+```{r regression-lin-simple, echo = TRUE}
+
+# Création du dataframe df_reg :
+# on sélectionne uniquement les variables nécessaires
+# à la régression linéaire simple
+df_reg <- loyers_appart %>%
+
+  # Sélection des variables :
+  # - loypredm2 : variable explicative
+  # - largeur_IP : variable à expliquer
+  select(loypredm2, largeur_IP) %>%
+
+  # Suppression des lignes contenant des valeurs manquantes
+  # afin d’éviter des erreurs lors de l’estimation du modèle
+  drop_na()
+
+# Ajustement du modèle de régression linéaire simple :
+# on cherche à expliquer largeur_IP
+# en fonction du loyer prédit au m² (loypredm2)
+mod_simple <- lm(
+
+  # Formule du modèle :
+  # largeur_IP = variable dépendante
+  # loypredm2 = variable explicative
+  largeur_IP ~ loypredm2,
+
+  # Dataframe utilisé pour estimer le modèle
+  data = df_reg
+)
+
+# Affichage du résumé statistique du modèle :
+# - coefficients estimés
+# - erreurs standards
+# - statistiques t
+# - p-values
+# - coefficient de détermination R²
+# - test global du modèle
+summary(mod_simple)
+```
+```{r visualisation-regression-lin-simple, echo = TRUE}
+
+ggplot(df_reg, aes(x = loypredm2, y = largeur_IP)) +
+  # Ajout des points du nuage de points :
+  # chaque point représente une commune
+  # alpha contrôle la transparence des points
+  # size définit la taille des points
+  # color définit leur couleur
+   geom_point(alpha = 0.25, size = 0.8, color = "steelblue") +
+  # Ajout de la droite de régression linéaire :
+  # method = "lm" indique qu’on ajuste un modèle linéaire
+  # color définit la couleur de la droite
+  # se = TRUE affiche l’intervalle de confiance autour de la droite
+  geom_smooth(method = "lm", color = "darkviolet", se = TRUE) +
+  labs(
+    title = "Régression linéaire : largeur_IP ~ loypredm2",
+    subtitle = "Appartements toutes typologies",
+    x = "Loyer prédit au m² (€)",
+    y = "Largeur de l’intervalle de prédiction"
+  ) +
+  theme_minimal()
+```
+
+La pente estimée est positive : plus le loyer prédit au m² est élevé, plus l’intervalle de prédiction tend à être large. Les marchés les plus chers apparaissent donc également comme les plus difficiles à prédire précisément. Le coefficient de détermination R² montre qu’une part importante de la variabilité de largeur_IP est expliquée par le niveau des loyers.
+
+# Analyse de regréssion linéaire multiple 
+
+```{r analyse-regression-lin-multiple, echo = TRUE}
+
+df_multi <- loyers_appart %>%
+  select(loypredm2, largeur_IP, R2_adj, nbobs_com) %>%
+  drop_na()  # Suppression des lignes contenant des valeurs manquantes
+  # afin d’éviter des erreurs lors de l’estimation du modèle
+
+
+# Formule du modèle :
+# loypredm2 est la variable expliquée
+# largeur_IP, R2_adj et nbobs_com sont les variables explicatives
+mod_multi <- lm(
+  loypredm2 ~ largeur_IP + R2_adj + nbobs_com,
+  data = df_multi
+)
+summary(mod_multi)
+```
+Le modèle multiple permet d’estimer l’effet propre de chaque variable explicative sur le niveau des loyers. Les coefficients positifs de largeur_IP et R2_adj suggèrent que les marchés les plus chers sont aussi ceux où les intervalles de prédiction sont plus larges et où le modèle hédonique est légèrement mieux ajusté. Le modèle présente un bon pouvoir explicatif global.
+
+#Analyse des résidus : résidus vs valeurs ajustées + QQplot
+
+```{r résidus-val_ajustée, echo = TRUE}
+
+# Extraction des résidus du modèle de régression multiple :
+# les résidus correspondent aux écarts entre les valeurs observées
+# et les valeurs prédites par le modèle
+residus <- residuals(mod_multi)
+
+# Extraction des valeurs ajustées (valeurs prédites par le modèle)
+ajustes <- fitted(mod_multi)
+
+# Création d’un dataframe regroupant :
+# - les valeurs ajustées
+# - les résidus
+# afin de faciliter la création des graphiques diagnostiques
+df_diag <- data.frame(
+  ajustes = ajustes,
+  residus = residus
+)
+
+ggplot(df_diag, aes(x = ajustes, y = residus)) +
+  # Ajout des points du nuage :
+  # chaque point représente une observation
+  # alpha règle la transparence
+  # size définit la taille des points
+  geom_point(alpha = 0.2, size = 0.5) +
+  
+  # Ajout d’une ligne horizontale rouge à y = 0
+  # elle permet de visualiser si les résidus sont centrés autour de zéro
+  geom_hline(yintercept = 0, color = "darkred") +
+  
+  # Ajout d’une courbe de tendance LOESS :
+  # permet de détecter une éventuelle structure non linéaire
+  # se = FALSE retire la bande d’intervalle de confiance
+  geom_smooth(method = "loess", se = FALSE, color = "lightblue") +
+  labs(
+    title = "Résidus vs valeurs ajustées",
+    x = "Valeurs ajustées",
+    y = "Résidus"
+  ) +
+  theme_minimal()
+
+# Création du QQ-plot des résidus :
+# permet de vérifier graphiquement l’hypothèse de normalité des résidus
+qqnorm(residus)
+
+# Ajout de la droite théorique de normalité
+# si les points suivent approximativement cette droite,
+# les résidus peuvent être considérés comme proches d’une loi normale
+qqline(residus, col = "red")
+
+```
+
+Les résidus sont globalement centrés autour de zéro, mais quelques écarts apparaissent pour les loyers les plus élevés. Le QQ-plot montre également des écarts à la normalité dans les queues de distribution. Malgré ces limites, la taille importante de l’échantillon permet de conserver des estimations globalement fiables.
+
+# Analyse en composantes principales (ACP) 
+
+Afin de compléter les analyses précédentes, nous réalisons une ACP sur le jeu de données des appartements toutes typologies. Le choix d’un seul dataset permet d’éviter des analyses redondantes, les quatre jeux présentant des structures statistiques proches.
+
+L’objectif de l’ACP est d’identifier les principaux axes qui structurent le marché locatif à partir des variables quantitatives loypredm2, largeur_IP, R2_adj, nbobs_com et nbobs_mail, ainsi que de visualiser les oppositions entre différents profils de communes.
+
+
+```{r préparation-données-pour-acp, echo= TRUE}
+
+# Fonction de préparation des données :
+# - conversion de REG et TYPPRED en variables qualitatives (facteurs)
+preparer <- function(data) {
+  data %>%
+    dplyr::mutate(
+      REG = as.factor(REG),
+      TYPPRED = as.factor(TYPPRED)
+    )
+}
+# Application de la fonction au jeu de données
+# des appartements toutes typologies
+loyers_appart <- preparer(loyers_appart)
+
+# Sélection des variables quantitatives utilisées pour l’ACP :
+# - loypredm2 : loyer prédit au m²
+# - largeur_IP : largeur de l’intervalle de prédiction
+# - R2_adj : qualité du modèle
+# - nbobs_com : nombre d’annonces dans la commune
+# - nbobs_mail : nombre d’annonces dans la maille
+
+vars_acp_appart <- loyers_appart %>%
+  dplyr::select(
+    loypredm2,
+    largeur_IP,
+    R2_adj,
+    nbobs_com,
+    nbobs_mail
+  ) %>%
+
+  # Suppression des lignes contenant des valeurs manquantes
+  tidyr::drop_na()
+
+```
+
+Les quatre jeux de données présentent des structures très proches : ils portent sur les mêmes communes, utilisent les mêmes variables et reposent sur une méthodologie de prédiction identique. Réaliser une ACP séparée pour chaque type de logement conduirait donc à des résultats largement similaires, avec des axes et des interprétations répétitives. Afin d’éviter des analyses redondantes et de privilégier une interprétation plus claire et approfondie, l’ACP est réalisée uniquement sur le jeu de données des appartements toutes typologies, considéré comme le plus représentatif du marché locatif privé.
+
+```{r ACP-apparts-toutes-typo, echo=TRUE}
+
+# ACP avec centrage et réduction
+acp_appart <- prcomp(
+  vars_acp_appart,
+  center = TRUE,
+  scale. = TRUE
+)
+
+# Résumé de l'ACP
+summary(acp_appart)
+
+# Tableau des variances expliquées
+var_exp <- tidy(acp_appart, matrix = "pcs")
+
+var_exp %>%
+  kable(
+    digits = 3,
+    col.names = c(
+      "Composante",
+      "Ecart-type",
+      "Variance expliquée",
+      "Variance cumulée"
+    ),
+    caption = "Variance expliquée par les composantes principales"
+  )
+
+# Scree plot amélioré
+ggplot(var_exp, aes(x = PC)) +
+
+  geom_col(
+    aes(y = percent),
+    fill = "skyblue",
+    alpha = 0.8
+  ) +
+
+  geom_line(
+    aes(y = cumulative),
+    color = "darkred",
+    linewidth = 1
+  ) +
+
+  geom_point(
+    aes(y = cumulative),
+    color = "black",
+    size = 2
+  ) +
+
+  scale_x_continuous(breaks = 1:5) +
+
+  scale_y_continuous(
+    labels = scales::percent_format(accuracy = 1)
+  ) +
+
+  labs(
+    title = "ACP des appartements toutes typologies",
+    subtitle = "Variance expliquée par composante principale",
+    x = "Composante principale",
+    y = "Part de variance expliquée"
+  ) +
+
+  theme_minimal()
+
+# Cercle des corrélations
+fviz_pca_var(
+  acp_appart,
+  col.var = "steelblue",
+  repel = TRUE
+)
+```
+
+
+Le premier axe principal peut être interprété comme un axe de tension du marché locatif : les variables loypredm2, largeur_IP, nbobs_com et nbobs_mail y sont fortement corrélées positivement. Les communes situées à l’extrémité positive de cet axe correspondent donc aux marchés urbains tendus, caractérisés par des loyers élevés et une forte concentration d’annonces.
+
+Le second axe semble davantage lié à la qualité statistique des estimations, notamment à travers la variable R2_adj. Il oppose des communes où les modèles hédoniques expliquent correctement les loyers à des territoires plus hétérogènes où les estimations sont moins stables.
+
+# Analyse variable qualitative et variable quantitative
+
+L’objectif de cette partie est d’étudier si les niveaux de loyers diffèrent selon les régions françaises. Nous analysons la variable quantitative loypredm2 en fonction de la variable qualitative REG.
+
+```{r visualisation-quali-quantitative, echo=TRUE}
+# Sélection des variables utiles
+loyers_reg <- data_appart %>%
+  select(REG, loypredm2) %>%
+  drop_na()
+
+# Conversion de REG en facteur
+loyers_reg$REG <- as.factor(loyers_reg$REG)
+
+# Boxplots des loyers par région
+
+ggplot(loyers_reg,
+       aes(x = REG,
+           y = loypredm2,
+           fill = REG)) +
+
+  geom_boxplot(
+    alpha = 0.8,
+    outlier.alpha = 0.3
+  ) +
+
+  scale_fill_manual(values = colorRampPalette(brewer.pal(12, "Set3"))(17)) +
+
+  labs(
+    title = "Distribution des loyers au m² selon les régions",
+    x = "Région",
+    y = "Loyer prédit au m² (€)"
+  ) +
+
+  theme_minimal(base_size = 11) +
+
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"
+  )
+```
+Les boxplots mettent en évidence d’importantes disparités régionales des loyers. Les régions les plus urbanisées présentent des loyers médians plus élevés ainsi qu’une dispersion plus importante, tandis que les régions rurales affichent des loyers plus faibles et plus homogènes. Les nombreuses valeurs extrêmes observées dans certaines régions traduisent l’existence de marchés très tendus dans quelques grandes agglomérations.
+
+```{r stats-quali-quantitative}
+
+# Calcul des statistiques descriptives par région
+stats_reg <- loyers_reg %>%
+
+  group_by(REG) %>%
+
+  summarise(
+    moyenne = mean(loypredm2),
+    mediane = median(loypredm2),
+    ecart_type = sd(loypredm2),
+    effectif = n()
+  )
+
+# Affichage du tableau
+stats_reg %>%
+  knitr::kable(
+    digits = 2,
+    caption = "Moyennes et médianes des loyers par région"
+  )
+```
+Les moyennes régionales confirment les écarts importants observés graphiquement. Les régions les plus tendues du marché locatif présentent des moyennes nettement supérieures à la moyenne nationale, alors que les régions moins denses affichent des niveaux de loyers plus faibles.
+
+#Classification non supervisée : clustering hiérarchique et k-means
+
+L’objectif de cette partie est d’identifier différents profils de territoires à partir des coordonnées obtenues par l’ACP. Nous utilisons d’abord une classification hiérarchique ascendante puis un algorithme de k-means afin de regrouper les communes présentant des caractéristiques locatives similaires.
+
+```{r utilisation-data_ACP, echo=TRUE}
+
+# Extraction des coordonnées des individus
+coord_acp <- as.data.frame(acp_appart$x)
+
+# Conservation des deux premières composantes
+coord_acp <- coord_acp %>%
+  select(PC1, PC2)
+```
+
+Les deux premières composantes principales résument l’essentiel de la structure des données. Elles serviront de base aux méthodes de classification.
+
+```{r clustering-hiérarchique , echo=TRUE}
+
+# Calcul de la matrice des distances euclidiennes
+mat_dist <- dist(coord_acp)
+
+# Classification hiérarchique ascendante
+hc <- hclust(
+  mat_dist,
+  method = "ward.D2"
+)
+
+# Dendrogramme
+plot(
+  hc,
+  labels = FALSE,
+  hang = -1,
+  main = "Classification hiérarchique des communes"
+)
+
+# Découpage en 3 classes
+rect.hclust(hc, k = 3, border = "darkred")
+
+```
+Le dendrogramme met en évidence plusieurs groupes de communes aux caractéristiques proches. Le découpage en trois classes permet d’obtenir une segmentation relativement lisible des territoires.
+
+
+
+```{r k-means, echo=TRUE}
+
+set.seed(123)  # graine pour la reproductibilité
+
+# Méthode du coude pour choisir le nombre de clusters optimal
+# coord_sample est utilisé pour accélérer les calculs
+# Échantillon de 500 communes pour accélérer les calculs
+coord_sample <- coord_acp[sample(nrow(coord_acp), 500), ]
+
+fviz_nbclust(coord_sample, kmeans, method = "wss") +
+  labs(title = "Méthode du coude") + theme_minimal()
+
+fviz_nbclust(coord_sample, kmeans, method = "silhouette") +
+  labs(title = "Indice de silhouette") + theme_minimal()
+
+# Application du k-means sur toutes les communes avec k=3
+km_res <- kmeans(coord_acp, centers = 3, nstart = 10)
+
+# Ajout des clusters au dataframe
+coord_acp$cluster <- as.factor(km_res$cluster)
+
+# Visualisation des clusters sur le plan ACP
+ggplot(coord_acp, aes(x = PC1, y = PC2, color = cluster)) +
+  geom_point(alpha = 0.6, size = 1.2) +
+  scale_color_brewer(palette = "Set2") +
+  labs(
+    title  = "Classification k-means sur les coordonnées ACP",
+    x      = "Première composante principale",
+    y      = "Deuxième composante principale",
+    color  = "Cluster"
+  ) +
+  theme_minimal(base_size = 11)
+
+```
+La classification k-means met en évidence trois profils territoriaux distincts du marché locatif français. Le premier cluster est caractérisé par des loyers élevés, une forte concentration d’annonces et des intervalles de prédiction plus larges, ce qui semble correspondre aux marchés urbains les plus tendus. Le deuxième cluster regroupe des communes aux caractéristiques intermédiaires, avec des niveaux de loyers et une densité d’annonces modérés. Enfin, le troisième cluster rassemble des communes présentant des loyers plus faibles et un volume d’annonces limité, caractéristiques de territoires plus ruraux.
+
+Cette segmentation confirme les résultats obtenus par l’ACP et met en évidence une structuration territoriale marquée du marché locatif privé français.
+
+# Conclusion 
+
+Cette étude du marché locatif privé français en 2025 met en évidence de fortes disparités territoriales des loyers. Les analyses descriptives montrent que les petites surfaces présentent les loyers au m² les plus élevés, tandis que les maisons affichent des niveaux plus faibles mais également très hétérogènes selon les territoires.
+
+Les analyses bivariées suggèrent que les niveaux de loyers et la qualité des estimations sont fortement liés au degré d’urbanisation des communes. Les régions les plus denses concentrent davantage d’annonces et bénéficient plus fréquemment d’estimations communales directes, alors que les territoires ruraux reposent principalement sur des estimations par maille.
+
+Les analyses de corrélation et les modèles de régression montrent également que les marchés les plus chers sont souvent les plus difficiles à prédire précisément, comme l’indique l’augmentation de la largeur des intervalles de prédiction.
+
+Enfin, l’ACP et les méthodes de classification mettent en évidence plusieurs profils territoriaux distincts du marché locatif français. Elles opposent principalement les grandes agglomérations tendues et fortement documentées aux espaces ruraux où les loyers sont plus faibles et les données plus rares.
+
+Dans l’ensemble, cette étude souligne que les loyers du marché locatif privé français sont fortement structurés par des logiques territoriales, et que la disponibilité des données influence directement la précision des estimations produites.
